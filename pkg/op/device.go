@@ -9,12 +9,12 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	httphelper "github.com/zitadel/oidc/v3/pkg/http"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
-	strs "github.com/zitadel/oidc/v3/pkg/strings"
 )
 
 type DeviceAuthorizationConfig struct {
@@ -64,7 +64,7 @@ func DeviceAuthorizationHandler(o OpenIDProvider) func(http.ResponseWriter, *htt
 }
 
 func DeviceAuthorization(w http.ResponseWriter, r *http.Request, o OpenIDProvider) error {
-	ctx, span := tracer.Start(r.Context(), "DeviceAuthorization")
+	ctx, span := Tracer.Start(r.Context(), "DeviceAuthorization")
 	r = r.WithContext(ctx)
 	defer span.End()
 
@@ -82,7 +82,7 @@ func DeviceAuthorization(w http.ResponseWriter, r *http.Request, o OpenIDProvide
 }
 
 func createDeviceAuthorization(ctx context.Context, req *oidc.DeviceAuthorizationRequest, clientID string, o OpenIDProvider) (*oidc.DeviceAuthorizationResponse, error) {
-	ctx, span := tracer.Start(ctx, "createDeviceAuthorization")
+	ctx, span := Tracer.Start(ctx, "createDeviceAuthorization")
 	defer span.End()
 
 	storage, err := assertDeviceStorage(o.Storage())
@@ -91,10 +91,7 @@ func createDeviceAuthorization(ctx context.Context, req *oidc.DeviceAuthorizatio
 	}
 	config := o.DeviceAuthorization()
 
-	deviceCode, err := NewDeviceCode(RecommendedDeviceCodeBytes)
-	if err != nil {
-		return nil, NewStatusError(err, http.StatusInternalServerError)
-	}
+	deviceCode, _ := NewDeviceCode(RecommendedDeviceCodeBytes)
 	userCode, err := NewUserCode([]rune(config.UserCode.CharSet), config.UserCode.CharAmount, config.UserCode.DashInterval)
 	if err != nil {
 		return nil, NewStatusError(err, http.StatusInternalServerError)
@@ -134,7 +131,7 @@ func createDeviceAuthorization(ctx context.Context, req *oidc.DeviceAuthorizatio
 }
 
 func ParseDeviceCodeRequest(r *http.Request, o OpenIDProvider) (*oidc.DeviceAuthorizationRequest, error) {
-	ctx, span := tracer.Start(r.Context(), "ParseDeviceCodeRequest")
+	ctx, span := Tracer.Start(r.Context(), "ParseDeviceCodeRequest")
 	r = r.WithContext(ctx)
 	defer span.End()
 
@@ -147,7 +144,7 @@ func ParseDeviceCodeRequest(r *http.Request, o OpenIDProvider) (*oidc.DeviceAuth
 		return nil, err
 	}
 	if !ValidateGrantType(client, oidc.GrantTypeDeviceCode) {
-		return nil, oidc.ErrUnauthorizedClient().WithDescription("client missing grant type " + string(oidc.GrantTypeCode))
+		return nil, oidc.ErrUnauthorizedClient().WithDescription("client missing grant type " + string(oidc.GrantTypeDeviceCode))
 	}
 
 	req := new(oidc.DeviceAuthorizationRequest)
@@ -163,11 +160,14 @@ func ParseDeviceCodeRequest(r *http.Request, o OpenIDProvider) (*oidc.DeviceAuth
 // results in a 22 character base64 encoded string.
 const RecommendedDeviceCodeBytes = 16
 
+// NewDeviceCode generates a new cryptographically secure device code as a base64 encoded string.
+// The length of the string is nBytes * 4 / 3.
+// An error is never returned.
+//
+// TODO(v4): change return type to string alone.
 func NewDeviceCode(nBytes int) (string, error) {
 	bytes := make([]byte, nBytes)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", fmt.Errorf("%w getting entropy for device code", err)
-	}
+	rand.Read(bytes)
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
 }
 
@@ -198,7 +198,7 @@ func NewUserCode(charSet []rune, charAmount, dashInterval int) (string, error) {
 }
 
 func DeviceAccessToken(w http.ResponseWriter, r *http.Request, exchanger Exchanger) {
-	ctx, span := tracer.Start(r.Context(), "DeviceAccessToken")
+	ctx, span := Tracer.Start(r.Context(), "DeviceAccessToken")
 	defer span.End()
 	r = r.WithContext(ctx)
 
@@ -276,7 +276,7 @@ func (r *DeviceAuthorizationState) GetAMR() []string {
 }
 
 func (r *DeviceAuthorizationState) GetAudience() []string {
-	if !strs.Contains(r.Audience, r.ClientID) {
+	if !slices.Contains(r.Audience, r.ClientID) {
 		r.Audience = append(r.Audience, r.ClientID)
 	}
 	return r.Audience
@@ -299,7 +299,7 @@ func (r *DeviceAuthorizationState) GetSubject() string {
 }
 
 func CheckDeviceAuthorizationState(ctx context.Context, clientID, deviceCode string, exchanger Exchanger) (*DeviceAuthorizationState, error) {
-	ctx, span := tracer.Start(ctx, "CheckDeviceAuthorizationState")
+	ctx, span := Tracer.Start(ctx, "CheckDeviceAuthorizationState")
 	defer span.End()
 
 	storage, err := assertDeviceStorage(exchanger.Storage())
@@ -331,7 +331,7 @@ func CreateDeviceTokenResponse(ctx context.Context, tokenRequest TokenRequest, c
 	Change the TokenRequest argument type to *DeviceAuthorizationState.
 	Breaking change that can not be done for v3.
 	*/
-	ctx, span := tracer.Start(ctx, "CreateDeviceTokenResponse")
+	ctx, span := Tracer.Start(ctx, "CreateDeviceTokenResponse")
 	defer span.End()
 
 	accessToken, refreshToken, validity, err := CreateAccessToken(ctx, tokenRequest, client.AccessTokenType(), creator, client, "")
@@ -344,10 +344,11 @@ func CreateDeviceTokenResponse(ctx context.Context, tokenRequest TokenRequest, c
 		RefreshToken: refreshToken,
 		TokenType:    oidc.BearerToken,
 		ExpiresIn:    uint64(validity.Seconds()),
+		Scope:        tokenRequest.GetScopes(),
 	}
 
 	// TODO(v4): remove type assertion
-	if idTokenRequest, ok := tokenRequest.(IDTokenRequest); ok && strs.Contains(tokenRequest.GetScopes(), oidc.ScopeOpenID) {
+	if idTokenRequest, ok := tokenRequest.(IDTokenRequest); ok && slices.Contains(tokenRequest.GetScopes(), oidc.ScopeOpenID) {
 		response.IDToken, err = CreateIDToken(ctx, IssuerFromContext(ctx), idTokenRequest, client.IDTokenLifetime(), accessToken, "", creator.Storage(), client)
 		if err != nil {
 			return nil, err

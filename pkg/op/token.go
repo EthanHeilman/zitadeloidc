@@ -2,11 +2,11 @@ package op
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/zitadel/oidc/v3/pkg/crypto"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
-	"github.com/zitadel/oidc/v3/pkg/strings"
 )
 
 type TokenCreator interface {
@@ -28,7 +28,7 @@ type AccessTokenClient interface {
 }
 
 func CreateTokenResponse(ctx context.Context, request IDTokenRequest, client Client, creator TokenCreator, createAccessToken bool, code, refreshToken string) (*oidc.AccessTokenResponse, error) {
-	ctx, span := tracer.Start(ctx, "CreateTokenResponse")
+	ctx, span := Tracer.Start(ctx, "CreateTokenResponse")
 	defer span.End()
 
 	var accessToken, newRefreshToken string
@@ -65,37 +65,54 @@ func CreateTokenResponse(ctx context.Context, request IDTokenRequest, client Cli
 		TokenType:    oidc.BearerToken,
 		ExpiresIn:    exp,
 		State:        state,
+		Scope:        request.GetScopes(),
 	}, nil
 }
 
+// createTokens delegates token creation to the appropriate storage method based on
+// the request type and requirements. It returns an access token ID and expiration
+// in all cases, but the refresh token handling varies:
+//   - When needsRefreshToken() returns true: calls CreateAccessAndRefreshTokens,
+//     which returns both tokens. The newRefreshToken will contain the actual token value.
+//   - When needsRefreshToken() returns false: calls CreateAccessToken only.
+//     The newRefreshToken will be an empty string in this case.
 func createTokens(ctx context.Context, tokenRequest TokenRequest, storage Storage, refreshToken string, client AccessTokenClient) (id, newRefreshToken string, exp time.Time, err error) {
-	ctx, span := tracer.Start(ctx, "createTokens")
+	ctx, span := Tracer.Start(ctx, "createTokens")
 	defer span.End()
 
 	if needsRefreshToken(tokenRequest, client) {
 		return storage.CreateAccessAndRefreshTokens(ctx, tokenRequest, refreshToken)
 	}
 	id, exp, err = storage.CreateAccessToken(ctx, tokenRequest)
-	return
+	return id, "", exp, err
 }
 
 func needsRefreshToken(tokenRequest TokenRequest, client AccessTokenClient) bool {
 	switch req := tokenRequest.(type) {
 	case AuthRequest:
-		return strings.Contains(req.GetScopes(), oidc.ScopeOfflineAccess) && req.GetResponseType() == oidc.ResponseTypeCode && ValidateGrantType(client, oidc.GrantTypeRefreshToken)
+		return slices.Contains(req.GetScopes(), oidc.ScopeOfflineAccess) && req.GetResponseType() == oidc.ResponseTypeCode && ValidateGrantType(client, oidc.GrantTypeRefreshToken)
 	case TokenExchangeRequest:
 		return req.GetRequestedTokenType() == oidc.RefreshTokenType
 	case RefreshTokenRequest:
 		return true
 	case *DeviceAuthorizationState:
-		return strings.Contains(req.GetScopes(), oidc.ScopeOfflineAccess) && ValidateGrantType(client, oidc.GrantTypeRefreshToken)
+		return slices.Contains(req.GetScopes(), oidc.ScopeOfflineAccess) && ValidateGrantType(client, oidc.GrantTypeRefreshToken)
 	default:
 		return false
 	}
 }
 
+// CreateAccessToken creates an access token and may return a refresh token from storage.
+// This function always creates the access token using the ID returned from storage.
+// The refresh token is obtained from the storage layer and passed through unchanged.
+// Whether a refresh token is included depends on the request:
+//   - Authorization code flow with offline_access scope: returns refresh token
+//   - Refresh token grant (rotation): returns new refresh token
+//   - Client credentials, implicit flow: returns empty string
+//
+// The function returns both tokens to support all flows with a single signature.
 func CreateAccessToken(ctx context.Context, tokenRequest TokenRequest, accessTokenType AccessTokenType, creator TokenCreator, client AccessTokenClient, refreshToken string) (accessToken, newRefreshToken string, validity time.Duration, err error) {
-	ctx, span := tracer.Start(ctx, "CreateAccessToken")
+	ctx, span := Tracer.Start(ctx, "CreateAccessToken")
 	defer span.End()
 
 	id, newRefreshToken, exp, err := createTokens(ctx, tokenRequest, creator.Storage(), refreshToken, client)
@@ -109,12 +126,12 @@ func CreateAccessToken(ctx context.Context, tokenRequest TokenRequest, accessTok
 	validity = exp.Add(clockSkew).Sub(time.Now().UTC())
 	if accessTokenType == AccessTokenTypeJWT {
 		accessToken, err = CreateJWT(ctx, IssuerFromContext(ctx), tokenRequest, exp, id, client, creator.Storage())
-		return
+		return accessToken, newRefreshToken, validity, err
 	}
-	_, span = tracer.Start(ctx, "CreateBearerToken")
+	_, span = Tracer.Start(ctx, "CreateBearerToken")
 	accessToken, err = CreateBearerToken(id, tokenRequest.GetSubject(), creator.Crypto())
 	span.End()
-	return
+	return accessToken, newRefreshToken, validity, err
 }
 
 func CreateBearerToken(tokenID, subject string, crypto Crypto) (string, error) {
@@ -126,7 +143,7 @@ type TokenActorRequest interface {
 }
 
 func CreateJWT(ctx context.Context, issuer string, tokenRequest TokenRequest, exp time.Time, id string, client AccessTokenClient, storage Storage) (string, error) {
-	ctx, span := tracer.Start(ctx, "CreateJWT")
+	ctx, span := Tracer.Start(ctx, "CreateJWT")
 	defer span.End()
 
 	claims := oidc.NewAccessTokenClaims(issuer, tokenRequest.GetSubject(), tokenRequest.GetAudience(), exp, id, client.GetID(), client.ClockSkew())
@@ -146,7 +163,11 @@ func CreateJWT(ctx context.Context, issuer string, tokenRequest TokenRequest, ex
 				tokenExchangeRequest,
 			)
 		} else {
-			privateClaims, err = storage.GetPrivateClaimsFromScopes(ctx, tokenRequest.GetSubject(), client.GetID(), removeUserinfoScopes(restrictedScopes))
+			if fromRequest, ok := storage.(CanGetPrivateClaimsFromRequest); ok {
+				privateClaims, err = fromRequest.GetPrivateClaimsFromRequest(ctx, tokenRequest, removeUserinfoScopes(restrictedScopes))
+			} else {
+				privateClaims, err = storage.GetPrivateClaimsFromScopes(ctx, tokenRequest.GetSubject(), client.GetID(), removeUserinfoScopes(restrictedScopes))
+			}
 		}
 
 		if err != nil {
@@ -178,7 +199,7 @@ type IDTokenRequest interface {
 }
 
 func CreateIDToken(ctx context.Context, issuer string, request IDTokenRequest, validity time.Duration, accessToken, code string, storage Storage, client Client) (string, error) {
-	ctx, span := tracer.Start(ctx, "CreateIDToken")
+	ctx, span := Tracer.Start(ctx, "CreateIDToken")
 	defer span.End()
 
 	exp := time.Now().UTC().Add(client.ClockSkew()).Add(validity)

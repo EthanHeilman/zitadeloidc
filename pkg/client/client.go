@@ -12,17 +12,22 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/zitadel/logging"
+	"github.com/zitadel/oidc/v3/internal/otel"
+	"golang.org/x/oauth2"
+
 	"github.com/zitadel/oidc/v3/pkg/crypto"
 	httphelper "github.com/zitadel/oidc/v3/pkg/http"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
-	"go.opentelemetry.io/otel"
-	"golang.org/x/oauth2"
 )
 
 var (
 	Encoder = httphelper.Encoder(oidc.NewEncoder())
 	Tracer  = otel.Tracer("github.com/zitadel/oidc/pkg/client")
 )
+
+type ClientSecretBasicAuthRequest interface {
+	Auth(req *http.Request)
+}
 
 // Discover calls the discovery endpoint of the provided issuer and returns its configuration
 // It accepts an optional argument "wellknownUrl" which can be used to overide the dicovery endpoint url
@@ -41,7 +46,7 @@ func Discover(ctx context.Context, issuer string, httpClient *http.Client, wellK
 	discoveryConfig := new(oidc.DiscoveryConfiguration)
 	err = httphelper.HttpRequest(httpClient, req, &discoveryConfig)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(oidc.ErrDiscoveryFailed, err)
 	}
 	if logger, ok := logging.FromContext(ctx); ok {
 		logger.Debug("discover", "config", discoveryConfig)
@@ -70,6 +75,11 @@ func callTokenEndpoint(ctx context.Context, request any, authFn any, caller Toke
 	if err != nil {
 		return nil, err
 	}
+
+	if basicAuthRequest, ok := request.(ClientSecretBasicAuthRequest); ok {
+		basicAuthRequest.Auth(req)
+	}
+
 	tokenRes := new(oidc.AccessTokenResponse)
 	if err := httphelper.HttpRequest(caller.HttpClient(), req, &tokenRes); err != nil {
 		return nil, err
@@ -144,6 +154,12 @@ type RevokeRequest struct {
 	ClientSecret  string `schema:"client_secret"`
 }
 
+func (r RevokeRequest) Auth(req *http.Request) {
+	if r.ClientSecret != "" {
+		req.SetBasicAuth(r.ClientID, r.ClientSecret)
+	}
+}
+
 func CallRevokeEndpoint(ctx context.Context, request any, authFn any, caller RevokeCaller) error {
 	ctx, span := Tracer.Start(ctx, "CallRevokeEndpoint")
 	defer span.End()
@@ -157,6 +173,11 @@ func CallRevokeEndpoint(ctx context.Context, request any, authFn any, caller Rev
 	if err != nil {
 		return err
 	}
+
+	if basicAuthRequest, ok := request.(ClientSecretBasicAuthRequest); ok {
+		basicAuthRequest.Auth(req)
+	}
+
 	client := caller.HttpClient()
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -196,12 +217,12 @@ func CallTokenExchangeEndpoint(ctx context.Context, request any, authFn any, cal
 }
 
 func NewSignerFromPrivateKeyByte(key []byte, keyID string) (jose.Signer, error) {
-	privateKey, err := crypto.BytesToPrivateKey(key)
+	privateKey, algorithm, err := crypto.BytesToPrivateKey(key)
 	if err != nil {
 		return nil, err
 	}
 	signingKey := jose.SigningKey{
-		Algorithm: jose.RS256,
+		Algorithm: algorithm,
 		Key:       &jose.JSONWebKey{Key: privateKey, KeyID: keyID},
 	}
 	return jose.NewSigner(signingKey, &jose.SignerOptions{})
@@ -237,9 +258,7 @@ func CallDeviceAuthorizationEndpoint(ctx context.Context, request *oidc.ClientCr
 	if err != nil {
 		return nil, err
 	}
-	if request.ClientSecret != "" {
-		req.SetBasicAuth(request.ClientID, request.ClientSecret)
-	}
+	request.Auth(req)
 
 	resp := new(oidc.DeviceAuthorizationResponse)
 	if err := httphelper.HttpRequest(caller.HttpClient(), req, &resp); err != nil {
@@ -253,6 +272,12 @@ type DeviceAccessTokenRequest struct {
 	oidc.DeviceAccessTokenRequest
 }
 
+func (r *DeviceAccessTokenRequest) Auth(req *http.Request) {
+	if r.ClientSecret != "" {
+		req.SetBasicAuth(r.ClientID, r.ClientSecret)
+	}
+}
+
 func CallDeviceAccessTokenEndpoint(ctx context.Context, request *DeviceAccessTokenRequest, caller TokenEndpointCaller) (*oidc.AccessTokenResponse, error) {
 	ctx, span := Tracer.Start(ctx, "CallDeviceAccessTokenEndpoint")
 	defer span.End()
@@ -261,9 +286,7 @@ func CallDeviceAccessTokenEndpoint(ctx context.Context, request *DeviceAccessTok
 	if err != nil {
 		return nil, err
 	}
-	if request.ClientSecret != "" {
-		req.SetBasicAuth(request.ClientID, request.ClientSecret)
-	}
+	request.Auth(req)
 
 	resp := new(oidc.AccessTokenResponse)
 	if err := httphelper.HttpRequest(caller.HttpClient(), req, &resp); err != nil {

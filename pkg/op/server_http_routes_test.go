@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,25 +15,26 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/zitadel/oidc/v3/example/server/storage"
 	"github.com/zitadel/oidc/v3/pkg/client"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
 	"github.com/zitadel/oidc/v3/pkg/op"
 )
 
 func jwtProfile() (string, error) {
-	keyData, err := client.ConfigFromKeyFile("../../example/server/service-key1.json")
+	data, err := os.ReadFile("../../example/server/service-key1.pem")
 	if err != nil {
 		return "", err
 	}
-	signer, err := client.NewSignerFromPrivateKeyByte([]byte(keyData.Key), keyData.KeyID)
+	signer, err := client.NewSignerFromPrivateKeyByte(data, storage.ServiceUserKeyID)
 	if err != nil {
 		return "", err
 	}
-	return client.SignedJWTProfileAssertion(keyData.UserID, []string{testIssuer}, time.Hour, signer)
+	return client.SignedJWTProfileAssertion(storage.ServiceUserID, []string{testIssuer}, time.Hour, signer)
 }
 
 func TestServerRoutes(t *testing.T) {
-	server := op.RegisterLegacyServer(op.NewLegacyServer(testProvider, *op.DefaultEndpoints))
+	server := op.RegisterLegacyServer(op.NewLegacyServer(testProvider, *op.DefaultEndpoints), op.AuthorizeCallbackHandler(testProvider))
 
 	storage := testProvider.Storage().(routesTestStorage)
 	ctx := op.ContextWithIssuer(context.Background(), testIssuer)
@@ -130,7 +132,7 @@ func TestServerRoutes(t *testing.T) {
 				"client_id":     client.GetID(),
 				"client_secret": "secret",
 				"redirect_uri":  "https://example.com",
-				"code":          "123",
+				"code":          "abc",
 			},
 			wantCode: http.StatusBadRequest,
 			json:     `{"error":"invalid_grant", "error_description":"invalid code"}`,
@@ -145,7 +147,7 @@ func TestServerRoutes(t *testing.T) {
 				"assertion":  jwtProfileToken,
 			},
 			wantCode: http.StatusOK,
-			contains: []string{`{"access_token":`, `"token_type":"Bearer","expires_in":299}`},
+			contains: []string{`{"access_token":`, `"token_type":"Bearer","expires_in":299,"scope":"openid"}`},
 		},
 		{
 			name:      "Token exchange",
@@ -174,7 +176,7 @@ func TestServerRoutes(t *testing.T) {
 				"scope":      oidc.SpaceDelimitedArray{oidc.ScopeOpenID, oidc.ScopeOfflineAccess}.String(),
 			},
 			wantCode: http.StatusOK,
-			contains: []string{`{"access_token":"`, `","token_type":"Bearer","expires_in":299}`},
+			contains: []string{`{"access_token":"`, `","token_type":"Bearer","expires_in":299,"scope":"openid offline_access"}`},
 		},
 		{
 			// This call will fail. A successful test is already
@@ -219,7 +221,10 @@ func TestServerRoutes(t *testing.T) {
 				"token": accessToken,
 			},
 			wantCode: http.StatusOK,
-			json:     `{"active":true,"scope":"openid offline_access email profile phone","client_id":"web","sub":"id1","username":"test-user@localhost","name":"Test User","given_name":"Test","family_name":"User","locale":"de","preferred_username":"test-user@localhost","email":"test-user@zitadel.ch","email_verified":true}`,
+			contains: []string{
+				`{"active":true,"scope":"openid offline_access email profile phone","client_id":"web","exp":`,
+				`,"sub":"id1","username":"test-user@localhost","name":"Test User","given_name":"Test","family_name":"User","locale":"de","preferred_username":"test-user@localhost","email":"test-user@zitadel.ch","email_verified":true}`,
+			},
 		},
 		{
 			name:   "user info",

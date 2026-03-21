@@ -46,6 +46,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/zitadel/oidc/v3/pkg/client/rp"
+	"github.com/zitadel/oidc/v3/pkg/oidc"
 	httphelper "github.com/zitadel/oidc/v3/pkg/http"
 )
 
@@ -60,6 +61,7 @@ func main() {
 	clientID := os.Getenv("CLIENT_ID")
 	clientSecret := os.Getenv("CLIENT_SECRET")
 	keyPath := os.Getenv("KEY_PATH")
+	keyID := os.Getenv("KEY_ID")
 	issuer := os.Getenv("ISSUER")
 	scopes := strings.Split(os.Getenv("SCOPES"), " ")
 
@@ -70,7 +72,11 @@ func main() {
 		options = append(options, rp.WithPKCE(cookieHandler))
 	}
 	if keyPath != "" {
-		options = append(options, rp.WithJWTProfile(rp.SignerFromKeyPath(keyPath)))
+		signingKey, err := os.ReadFile(keyPath)
+		if err != nil {
+			logrus.Fatalf("error reading key file %s", err.Error())
+		}
+		options = append(options, rp.WithJWTProfile(rp.SignerFromKeyAndKeyID(signingKey, keyID)))
 	}
 
 	provider, err := rp.NewRelyingPartyOIDC(ctx, issuer, clientID, clientSecret, "", scopes, options...)
@@ -92,4 +98,18 @@ func main() {
 		logrus.Fatal(err)
 	}
 	logrus.Infof("successfully obtained token: %#v", token)
+
+	logrus.Infof("Going to refresh token")
+	refreshedToken, err := rp.RefreshTokens[*oidc.IDTokenClaims](ctx, provider, token.RefreshToken, "", "")
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	logrus.Infof("refreshedToken: %#v", refreshedToken.Token)
+
+	logrus.Infof("Going to revoke token")
+	err = rp.RevokeToken(ctx, provider, token.AccessToken, "refresh_token")
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	logrus.Info("Token revoked")
 }

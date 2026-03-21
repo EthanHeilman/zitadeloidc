@@ -102,6 +102,7 @@ func TestRoutes(t *testing.T) {
 	authReq, err := storage.CreateAuthRequest(ctx, oidcAuthReq, "id1")
 	require.NoError(t, err)
 	storage.AuthRequestDone(authReq.GetID())
+	storage.SaveAuthCode(ctx, authReq.GetID(), "123")
 
 	accessToken, refreshToken, _, err := op.CreateAccessToken(ctx, authReq, op.AccessTokenTypeBearer, testProvider, client, "")
 	require.NoError(t, err)
@@ -232,7 +233,7 @@ func TestRoutes(t *testing.T) {
 				"scope":      oidc.SpaceDelimitedArray{oidc.ScopeOpenID, oidc.ScopeOfflineAccess}.String(),
 			},
 			wantCode: http.StatusOK,
-			contains: []string{`{"access_token":"`, `","token_type":"Bearer","expires_in":299}`},
+			contains: []string{`{"access_token":"`, `","token_type":"Bearer","expires_in":299,"scope":"openid offline_access"}`},
 		},
 		{
 			// This call will fail. A successful test is already
@@ -277,7 +278,10 @@ func TestRoutes(t *testing.T) {
 				"token": accessToken,
 			},
 			wantCode: http.StatusOK,
-			json:     `{"active":true,"scope":"openid offline_access email profile phone","client_id":"web","sub":"id1","username":"test-user@localhost","name":"Test User","given_name":"Test","family_name":"User","locale":"de","preferred_username":"test-user@localhost","email":"test-user@zitadel.ch","email_verified":true}`,
+			contains: []string{
+				`{"active":true,"scope":"openid offline_access email profile phone","client_id":"web","exp":`,
+				`,"sub":"id1","username":"test-user@localhost","name":"Test User","given_name":"Test","family_name":"User","locale":"de","preferred_username":"test-user@localhost","email":"test-user@zitadel.ch","email_verified":true}`,
+			},
 		},
 		{
 			name:   "user info",

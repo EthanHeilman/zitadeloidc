@@ -45,6 +45,7 @@ func CreateDiscoveryConfig(ctx context.Context, config Configuration, storage Di
 		EndSessionEndpoint:                         config.EndSessionEndpoint().Absolute(issuer),
 		JwksURI:                                    config.KeysEndpoint().Absolute(issuer),
 		DeviceAuthorizationEndpoint:                config.DeviceAuthorizationEndpoint().Absolute(issuer),
+		CheckSessionIframe:                         config.CheckSessionIframe().Absolute(issuer),
 		ScopesSupported:                            Scopes(config),
 		ResponseTypesSupported:                     ResponseTypes(config),
 		GrantTypesSupported:                        GrantTypes(config),
@@ -61,6 +62,8 @@ func CreateDiscoveryConfig(ctx context.Context, config Configuration, storage Di
 		CodeChallengeMethodsSupported:                      CodeChallengeMethods(config),
 		UILocalesSupported:                                 config.SupportedUILocales(),
 		RequestParameterSupported:                          config.RequestObjectSupported(),
+		BackChannelLogoutSupported:                         config.BackChannelLogoutSupported(),
+		BackChannelLogoutSessionSupported:                  config.BackChannelLogoutSessionSupported(),
 	}
 }
 
@@ -92,11 +95,17 @@ func createDiscoveryConfigV2(ctx context.Context, config Configuration, storage 
 		CodeChallengeMethodsSupported:                      CodeChallengeMethods(config),
 		UILocalesSupported:                                 config.SupportedUILocales(),
 		RequestParameterSupported:                          config.RequestObjectSupported(),
+		BackChannelLogoutSupported:                         config.BackChannelLogoutSupported(),
+		BackChannelLogoutSessionSupported:                  config.BackChannelLogoutSessionSupported(),
 	}
 }
 
 func Scopes(c Configuration) []string {
-	return DefaultSupportedScopes // TODO: config
+	provider, ok := c.(*Provider)
+	if ok && provider.config.SupportedScopes != nil {
+		return provider.config.SupportedScopes
+	}
+	return DefaultSupportedScopes
 }
 
 func ResponseTypes(c Configuration) []string {
@@ -131,11 +140,11 @@ func GrantTypes(c Configuration) []oidc.GrantType {
 }
 
 func SubjectTypes(c Configuration) []string {
-	return []string{"public"} //TODO: config
+	return []string{"public"} // TODO: config
 }
 
 func SigAlgorithms(ctx context.Context, storage DiscoverStorage) []string {
-	ctx, span := tracer.Start(ctx, "SigAlgorithms")
+	ctx, span := Tracer.Start(ctx, "SigAlgorithms")
 	defer span.End()
 
 	algorithms, err := storage.SignatureAlgorithms(ctx)

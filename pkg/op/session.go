@@ -27,7 +27,7 @@ func endSessionHandler(ender SessionEnder) func(http.ResponseWriter, *http.Reque
 }
 
 func EndSession(w http.ResponseWriter, r *http.Request, ender SessionEnder) {
-	ctx, span := tracer.Start(r.Context(), "EndSession")
+	ctx, span := Tracer.Start(r.Context(), "EndSession")
 	defer span.End()
 	r = r.WithContext(ctx)
 
@@ -68,11 +68,13 @@ func ParseEndSessionRequest(r *http.Request, decoder httphelper.Decoder) (*oidc.
 }
 
 func ValidateEndSessionRequest(ctx context.Context, req *oidc.EndSessionRequest, ender SessionEnder) (*EndSessionRequest, error) {
-	ctx, span := tracer.Start(ctx, "ValidateEndSessionRequest")
+	ctx, span := Tracer.Start(ctx, "ValidateEndSessionRequest")
 	defer span.End()
 
 	session := &EndSessionRequest{
 		RedirectURI: ender.DefaultLogoutRedirectURI(),
+		LogoutHint:  req.LogoutHint,
+		UILocales:   req.UILocales,
 	}
 	if req.IdTokenHint != "" {
 		claims, err := VerifyIDTokenHint[*oidc.IDTokenClaims](ctx, req.IdTokenHint, ender.IDTokenHintVerifier(ctx))

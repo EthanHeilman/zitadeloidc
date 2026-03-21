@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -15,18 +17,28 @@ import (
 	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/zitadel/logging"
+
 	"github.com/zitadel/oidc/v3/pkg/client"
 	httphelper "github.com/zitadel/oidc/v3/pkg/http"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
 )
 
 const (
+	pkceDisabled pkceState = iota
+	pkceEnabled
+	pkceFromDiscovery
+
 	idTokenKey = "id_token"
 	stateParam = "state"
 	pkceCode   = "pkce"
 )
 
-var ErrUserInfoSubNotMatching = errors.New("sub from userinfo does not match the sub from the id_token")
+var (
+	ErrUserInfoSubNotMatching = errors.New("sub from userinfo does not match the sub from the id_token")
+	ErrInvalidOption          = errors.New("invalid relying party option")
+)
+
+type pkceState uint8
 
 // RelyingParty declares the minimal interface for oidc clients
 type RelyingParty interface {
@@ -90,12 +102,13 @@ var DefaultUnauthorizedHandler UnauthorizedHandler = func(w http.ResponseWriter,
 }
 
 type relyingParty struct {
-	issuer            string
-	DiscoveryEndpoint string
-	endpoints         Endpoints
-	oauthConfig       *oauth2.Config
-	oauth2Only        bool
-	pkce              bool
+	issuer                      string
+	DiscoveryEndpoint           string
+	endpoints                   Endpoints
+	oauthConfig                 *oauth2.Config
+	oauth2Only                  bool
+	pkce                        pkceState
+	useSigningAlgsFromDiscovery bool
 
 	httpClient    *http.Client
 	cookieHandler *httphelper.CookieHandler
@@ -119,7 +132,7 @@ func (rp *relyingParty) Issuer() string {
 }
 
 func (rp *relyingParty) IsPKCE() bool {
-	return rp.pkce
+	return rp.pkce == pkceEnabled
 }
 
 func (rp *relyingParty) CookieHandler() *httphelper.CookieHandler {
@@ -193,12 +206,20 @@ func NewRelyingPartyOAuth(config *oauth2.Config, options ...Option) (RelyingPart
 		oauth2Only:          true,
 		unauthorizedHandler: DefaultUnauthorizedHandler,
 		oauthAuthStyle:      oauth2.AuthStyleAutoDetect,
+		pkce:                pkceDisabled,
 	}
 
 	for _, optFunc := range options {
 		if err := optFunc(rp); err != nil {
 			return nil, err
 		}
+	}
+
+	if rp.pkce == pkceFromDiscovery {
+		return nil, fmt.Errorf(
+			"%w: PKCE from discovery is not supported for OAuth2 only relying parties",
+			ErrInvalidOption,
+		)
 	}
 
 	rp.oauthConfig.Endpoint.AuthStyle = rp.oauthAuthStyle
@@ -226,6 +247,7 @@ func NewRelyingPartyOIDC(ctx context.Context, issuer, clientID, clientSecret, re
 		httpClient:     httphelper.DefaultHTTPClient,
 		oauth2Only:     false,
 		oauthAuthStyle: oauth2.AuthStyleAutoDetect,
+		pkce:           pkceDisabled,
 	}
 
 	for _, optFunc := range options {
@@ -238,12 +260,29 @@ func NewRelyingPartyOIDC(ctx context.Context, issuer, clientID, clientSecret, re
 	if err != nil {
 		return nil, err
 	}
+	if rp.useSigningAlgsFromDiscovery {
+		rp.verifierOpts = append(rp.verifierOpts, WithSupportedSigningAlgorithms(discoveryConfiguration.IDTokenSigningAlgValuesSupported...))
+	}
 	endpoints := GetEndpoints(discoveryConfiguration)
 	rp.oauthConfig.Endpoint = endpoints.Endpoint
 	rp.endpoints = endpoints
 
 	rp.oauthConfig.Endpoint.AuthStyle = rp.oauthAuthStyle
 	rp.endpoints.Endpoint.AuthStyle = rp.oauthAuthStyle
+
+	if rp.pkce == pkceFromDiscovery {
+		if slices.ContainsFunc(
+			discoveryConfiguration.CodeChallengeMethodsSupported,
+			func(method oidc.CodeChallengeMethod) bool {
+				return method == oidc.CodeChallengeMethodPlain ||
+					method == oidc.CodeChallengeMethodS256
+			},
+		) {
+			rp.pkce = pkceEnabled
+		} else {
+			rp.pkce = pkceDisabled
+		}
+	}
 
 	// avoid races by calling these early
 	_ = rp.IDTokenVerifier()     // sets idTokenVerifier
@@ -276,7 +315,19 @@ func WithCookieHandler(cookieHandler *httphelper.CookieHandler) Option {
 // and exchanging the code challenge
 func WithPKCE(cookieHandler *httphelper.CookieHandler) Option {
 	return func(rp *relyingParty) error {
-		rp.pkce = true
+		rp.pkce = pkceEnabled
+		rp.cookieHandler = cookieHandler
+		return nil
+	}
+}
+
+// WithPKCEFromDiscovery enables Oauth2 Code Challenge if support is found in the discovery response from the OP.
+// Passing this option to a Oauth2-only RP will result in an error, as there is no discovery call.
+// It also sets a `CookieHandler` for securing the various redirects
+// and exchanging the code challenge
+func WithPKCEFromDiscovery(cookieHandler *httphelper.CookieHandler) Option {
+	return func(rp *relyingParty) error {
+		rp.pkce = pkceFromDiscovery
 		rp.cookieHandler = cookieHandler
 		return nil
 	}
@@ -320,7 +371,7 @@ func WithVerifierOpts(opts ...VerifierOption) Option {
 
 // WithClientKey specifies the path to the key.json to be used for the JWT Profile Client Authentication on the token endpoint
 //
-// deprecated: use WithJWTProfile(SignerFromKeyPath(path)) instead
+// Deprecated: use WithJWTProfile(SignerFromKeyPath(path)), resp. WithJWTProfile(SignerFromKeyAndKeyID(key, keyID) instead.
 func WithClientKey(path string) Option {
 	return WithJWTProfile(SignerFromKeyPath(path))
 }
@@ -348,8 +399,19 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
+// WithSigningAlgsFromDiscovery appends the [WithSupportedSigningAlgorithms] option to the Verifier Options.
+// The algorithms returned in the `id_token_signing_alg_values_supported` from the discovery response will be set.
+func WithSigningAlgsFromDiscovery() Option {
+	return func(rp *relyingParty) error {
+		rp.useSigningAlgsFromDiscovery = true
+		return nil
+	}
+}
+
 type SignerFromKey func() (jose.Signer, error)
 
+// Deprecated: use [SignerFromKeyAndKeyID] instead.
+// The function will be removed in the next major release.
 func SignerFromKeyPath(path string) SignerFromKey {
 	return func() (jose.Signer, error) {
 		config, err := client.ConfigFromKeyFile(path)
@@ -360,6 +422,8 @@ func SignerFromKeyPath(path string) SignerFromKey {
 	}
 }
 
+// Deprecated: use [SignerFromKeyAndKeyID] instead.
+// The function will be removed in the next major release.
 func SignerFromKeyFile(fileData []byte) SignerFromKey {
 	return func() (jose.Signer, error) {
 		config, err := client.ConfigFromKeyFileData(fileData)
@@ -397,12 +461,19 @@ func AuthURLHandler(stateFn func() string, rp RelyingParty, urlParam ...URLParam
 		}
 
 		state := stateFn()
-		if err := trySetStateCookie(w, state, rp); err != nil {
+		if err := trySetStateCookie(r, w, state, rp); err != nil {
 			unauthorizedError(w, r, "failed to create state cookie: "+err.Error(), state, rp)
 			return
 		}
 		if rp.IsPKCE() {
-			codeChallenge, err := GenerateAndStoreCodeChallenge(w, rp)
+			var codeChallenge string
+			var err error
+			if rp.CookieHandler().IsRequestAware() {
+				codeChallenge, err = GenerateAndStoreCodeChallengeWithRequest(r, w, rp)
+			} else {
+				codeChallenge, err = GenerateAndStoreCodeChallenge(w, rp)
+			}
+
 			if err != nil {
 				unauthorizedError(w, r, "failed to create code challenge: "+err.Error(), state, rp)
 				return
@@ -418,6 +489,15 @@ func AuthURLHandler(stateFn func() string, rp RelyingParty, urlParam ...URLParam
 func GenerateAndStoreCodeChallenge(w http.ResponseWriter, rp RelyingParty) (string, error) {
 	codeVerifier := base64.RawURLEncoding.EncodeToString([]byte(uuid.New().String()))
 	if err := rp.CookieHandler().SetCookie(w, pkceCode, codeVerifier); err != nil {
+		return "", err
+	}
+	return oidc.NewSHACodeChallenge(codeVerifier), nil
+}
+
+// GenerateAndStoreCodeChallenge generates a PKCE code challenge and stores its verifier into a secure cookie
+func GenerateAndStoreCodeChallengeWithRequest(r *http.Request, w http.ResponseWriter, rp RelyingParty) (string, error) {
+	codeVerifier := base64.RawURLEncoding.EncodeToString([]byte(uuid.New().String()))
+	if err := rp.CookieHandler().SetRequestAwareCookie(r, w, pkceCode, codeVerifier); err != nil {
 		return "", err
 	}
 	return oidc.NewSHACodeChallenge(codeVerifier), nil
@@ -528,7 +608,7 @@ func CodeExchangeHandler[C oidc.IDClaims](callback CodeExchangeCallback[C], rp R
 			rp.CookieHandler().DeleteCookie(w, pkceCode)
 		}
 		if rp.Signer() != nil {
-			assertion, err := client.SignedJWTProfileAssertion(rp.OAuthConfig().ClientID, []string{rp.Issuer()}, time.Hour, rp.Signer())
+			assertion, err := client.SignedJWTProfileAssertion(rp.OAuthConfig().ClientID, []string{rp.Issuer(), rp.OAuthConfig().Endpoint.TokenURL}, time.Hour, rp.Signer())
 			if err != nil {
 				unauthorizedError(w, r, "failed to build assertion: "+err.Error(), state, rp)
 				return
@@ -594,9 +674,16 @@ func Userinfo[U SubjectGetter](ctx context.Context, token, tokenType, subject st
 	return userinfo, nil
 }
 
-func trySetStateCookie(w http.ResponseWriter, state string, rp RelyingParty) error {
+func trySetStateCookie(r *http.Request, w http.ResponseWriter, state string, rp RelyingParty) error {
 	if rp.CookieHandler() != nil {
-		if err := rp.CookieHandler().SetCookie(w, stateParam, state); err != nil {
+		var err error
+		if rp.CookieHandler().IsRequestAware() {
+			err = rp.CookieHandler().SetRequestAwareCookie(r, w, stateParam, state)
+		} else {
+			err = rp.CookieHandler().SetCookie(w, stateParam, state)
+		}
+
+		if err != nil {
 			return err
 		}
 	}
@@ -721,12 +808,18 @@ func (t tokenEndpointCaller) TokenEndpoint() string {
 
 type RefreshTokenRequest struct {
 	RefreshToken        string                   `schema:"refresh_token"`
-	Scopes              oidc.SpaceDelimitedArray `schema:"scope"`
-	ClientID            string                   `schema:"client_id"`
-	ClientSecret        string                   `schema:"client_secret"`
-	ClientAssertion     string                   `schema:"client_assertion"`
-	ClientAssertionType string                   `schema:"client_assertion_type"`
+	Scopes              oidc.SpaceDelimitedArray `schema:"scope,omitempty"`
+	ClientID            string                   `schema:"client_id,omitempty"`
+	ClientSecret        string                   `schema:"client_secret,omitempty"`
+	ClientAssertion     string                   `schema:"client_assertion,omitempty"`
+	ClientAssertionType string                   `schema:"client_assertion_type,omitempty"`
 	GrantType           oidc.GrantType           `schema:"grant_type"`
+}
+
+func (r RefreshTokenRequest) Auth(req *http.Request) {
+	if r.ClientSecret != "" {
+		req.SetBasicAuth(r.ClientID, r.ClientSecret)
+	}
 }
 
 // RefreshTokens performs a token refresh. If it doesn't error, it will always
@@ -763,7 +856,7 @@ func RefreshTokens[C oidc.IDClaims](ctx context.Context, rp RelyingParty, refres
 	return nil, err
 }
 
-func EndSession(ctx context.Context, rp RelyingParty, idToken, optionalRedirectURI, optionalState string) (*url.URL, error) {
+func EndSession(ctx context.Context, rp RelyingParty, idToken, optionalRedirectURI, optionalState, optionalLogoutHint string, optionalLocales oidc.Locales) (*url.URL, error) {
 	ctx = logCtxWithRPData(ctx, rp, "function", "EndSession")
 	ctx, span := client.Tracer.Start(ctx, "RefreshTokens")
 	defer span.End()
@@ -773,6 +866,8 @@ func EndSession(ctx context.Context, rp RelyingParty, idToken, optionalRedirectU
 		ClientID:              rp.OAuthConfig().ClientID,
 		PostLogoutRedirectURI: optionalRedirectURI,
 		State:                 optionalState,
+		LogoutHint:            optionalLogoutHint,
+		UILocales:             optionalLocales,
 	}
 	return client.CallEndSessionEndpoint(ctx, request, nil, rp)
 }
