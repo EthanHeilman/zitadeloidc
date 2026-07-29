@@ -109,6 +109,7 @@ type OpenIDProvider interface {
 	Crypto() Crypto
 	DefaultLogoutRedirectURI() string
 	Probes() []ProbesFn
+	// Deprecated: configure logging with slog.SetDefault.
 	Logger() *slog.Logger
 
 	// Deprecated: Provider now implements http.Handler directly.
@@ -159,6 +160,7 @@ func authCallbackPath(o OpenIDProvider) string {
 
 type Config struct {
 	CryptoKey                         [32]byte // for encrypting access token via NewAESCrypto; will be overwritten by WithCrypto
+	CryptoKeyId                       string
 	DefaultLogoutRedirectURI          string
 	CodeMethodS256                    bool
 	AuthMethodPost                    bool
@@ -204,7 +206,7 @@ type Endpoints struct {
 //
 // This does not include login. Login is handled with a redirect that includes the
 // request ID. The redirect for logins is specified per-client by Client.LoginURL().
-// Successful logins should mark the request as authorized and redirect back to to
+// Successful logins should mark the request as authorized and redirect back to
 // op.AuthCallbackURL(provider) which is probably /callback. On the redirect back
 // to the AuthCallbackURL, the request id should be passed as the "id" parameter.
 //
@@ -213,7 +215,7 @@ func NewOpenIDProvider(issuer string, config *Config, storage Storage, opOpts ..
 	return NewProvider(config, storage, StaticIssuer(issuer), opOpts...)
 }
 
-// NewForwardedOpenIDProvider tries to establishes the issuer from the request Host.
+// NewForwardedOpenIDProvider tries to establish the issuer from the request Host.
 //
 // Deprecated: use [NewProvider] with an issuer function direct.
 func NewDynamicOpenIDProvider(path string, config *Config, storage Storage, opOpts ...Option) (*Provider, error) {
@@ -249,7 +251,7 @@ func NewForwardedOpenIDProvider(path string, config *Config, storage Storage, op
 //
 // This does not include login. Login is handled with a redirect that includes the
 // request ID. The redirect for logins is specified per-client by Client.LoginURL().
-// Successful logins should mark the request as authorized and redirect back to to
+// Successful logins should mark the request as authorized and redirect back to
 // op.AuthCallbackURL(provider) which is probably /callback. On the redirect back
 // to the AuthCallbackURL, the request id should be passed as the "id" parameter.
 func NewProvider(
@@ -259,16 +261,23 @@ func NewProvider(
 	opOpts ...Option,
 ) (_ *Provider, err error) {
 	keySet := &OpenIDKeySet{storage}
+	easgcmCrypto := NewAES256GCMCrypto(config.CryptoKey, config.CryptoKeyId)
+	crypto := NewCompositeCrypto(
+		easgcmCrypto,
+		[]Decrypter{
+			easgcmCrypto,
+			NewAESCrypto(config.CryptoKey),
+		},
+	)
 	o := &Provider{
 		config:            config,
 		storage:           storage,
 		accessTokenKeySet: keySet,
 		idTokenHinKeySet:  keySet,
-		crypto:            NewAESCrypto(config.CryptoKey),
+		crypto:            crypto,
 		endpoints:         DefaultEndpoints,
 		timer:             make(<-chan time.Time),
 		corsOpts:          &defaultCORSOptions,
-		logger:            slog.Default(),
 	}
 
 	for _, optFunc := range opOpts {
@@ -305,7 +314,6 @@ type Provider struct {
 	accessTokenVerifierOpts []AccessTokenVerifierOpt
 	idTokenHintVerifierOpts []IDTokenHintVerifierOpt
 	corsOpts                *cors.Options
-	logger                  *slog.Logger
 }
 
 func (o *Provider) IssuerFromRequest(r *http.Request) string {
@@ -473,8 +481,10 @@ func (o *Provider) CORSOptions() *cors.Options {
 	return o.corsOpts
 }
 
+// Logger returns the global default logger.
+// Deprecated: configure logging with [slog.SetDefault].
 func (o *Provider) Logger() *slog.Logger {
-	return o.logger
+	return slog.Default()
 }
 
 // Deprecated: Provider now implements http.Handler directly.
@@ -593,7 +603,7 @@ func WithCustomDeviceAuthorizationEndpoint(endpoint *Endpoint) Option {
 }
 
 // WithCustomEndpoints sets multiple endpoints at once.
-// Non of the endpoints may be nil, or an error will
+// None of the endpoints may be nil, or an error will
 // be returned when the Option used by the Provider.
 func WithCustomEndpoints(auth, token, userInfo, revocation, endSession, keys *Endpoint) Option {
 	return func(o *Provider) error {
@@ -658,10 +668,10 @@ func WithCORSOptions(opts *cors.Options) Option {
 	}
 }
 
-// WithLogger lets a logger other than slog.Default().
-func WithLogger(logger *slog.Logger) Option {
-	return func(o *Provider) error {
-		o.logger = logger
+// WithLogger is retained for source compatibility.
+// Deprecated: use [slog.SetDefault]. This option has no effect.
+func WithLogger(*slog.Logger) Option {
+	return func(*Provider) error {
 		return nil
 	}
 }

@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/securecookie"
-	"github.com/sirupsen/logrus"
 	"github.com/zitadel/oidc/v3/pkg/op"
 )
 
@@ -18,7 +18,7 @@ type deviceAuthenticate interface {
 	CheckUsernamePasswordSimple(username, password string) error
 	op.DeviceAuthorizationStorage
 
-	// GetDeviceAuthorizationByUserCode resturns the current state of the device authorization flow,
+	// GetDeviceAuthorizationByUserCode returns the current state of the device authorization flow,
 	// identified by the user code.
 	GetDeviceAuthorizationByUserCode(ctx context.Context, userCode string) (*op.DeviceAuthorizationState, error)
 
@@ -55,7 +55,7 @@ func renderUserCode(w io.Writer, err error) {
 	}
 
 	if err := templates.ExecuteTemplate(w, "usercode", data); err != nil {
-		logrus.Error(err)
+		slog.Error("render user code", "error", err)
 	}
 }
 
@@ -68,7 +68,7 @@ func renderDeviceLogin(w http.ResponseWriter, userCode string, err error) {
 		Error:    errMsg(err),
 	}
 	if err = templates.ExecuteTemplate(w, "device_login", data); err != nil {
-		logrus.Error(err)
+		slog.Error("render device login", "error", err)
 	}
 }
 
@@ -83,7 +83,7 @@ func renderConfirmPage(w http.ResponseWriter, username, clientID string, scopes 
 		Scopes:   scopes,
 	}
 	if err := templates.ExecuteTemplate(w, "confirm_device", data); err != nil {
-		logrus.Error(err)
+		slog.Error("render confirmation page", "error", err)
 	}
 }
 
@@ -162,9 +162,10 @@ func (d *deviceLogin) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cookie := &http.Cookie{
-		Name:  userCodeCookieName,
-		Value: encoded,
-		Path:  "/",
+		Name:     userCodeCookieName,
+		Value:    encoded,
+		Path:     "/",
+		HttpOnly: true,
 	}
 	http.SetCookie(w, cookie)
 	renderConfirmPage(w, username, state.ClientID, state.Scopes)

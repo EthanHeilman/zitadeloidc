@@ -122,7 +122,7 @@ func TestServerRoutes(t *testing.T) {
 			headerContains: map[string]string{"Location": "/login/username?authRequestID="},
 		},
 		{
-			// This call will fail. A successfull test is already
+			// This call will fail. A successful test is already
 			// part of client/integration_test.go
 			name:   "code exchange",
 			method: http.MethodGet,
@@ -225,6 +225,16 @@ func TestServerRoutes(t *testing.T) {
 				`{"active":true,"scope":"openid offline_access email profile phone","client_id":"web","exp":`,
 				`,"sub":"id1","username":"test-user@localhost","name":"Test User","given_name":"Test","family_name":"User","locale":"de","preferred_username":"test-user@localhost","email":"test-user@zitadel.ch","email_verified":true}`,
 			},
+		},
+		{
+			name:   "user info lowercase bearer",
+			method: http.MethodGet,
+			path:   testProvider.UserinfoEndpoint().Relative(),
+			header: map[string]string{
+				"authorization": "bearer " + accessToken,
+			},
+			wantCode: http.StatusOK,
+			json:     `{"sub":"id1","name":"Test User","given_name":"Test","family_name":"User","locale":"de","preferred_username":"test-user@localhost","email":"test-user@zitadel.ch","email_verified":true}`,
 		},
 		{
 			name:   "user info",

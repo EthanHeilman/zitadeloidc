@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -157,7 +158,7 @@ func TestNewAccessTokenClaims(t *testing.T) {
 
 	// test if the dynamic timestamps are around now,
 	// allowing for a delta of 1, just in case we flip on
-	// either side of a second boundry.
+	// either side of a second boundary.
 	nowMinusSkew := NowTime() - 1
 	assert.InDelta(t, int64(nowMinusSkew), int64(got.IssuedAt), 1)
 	assert.InDelta(t, int64(nowMinusSkew), int64(got.NotBefore), 1)
@@ -220,7 +221,7 @@ func TestNewIDTokenClaims(t *testing.T) {
 
 	// test if the dynamic timestamp is around now,
 	// allowing for a delta of 1, just in case we flip on
-	// either side of a second boundry.
+	// either side of a second boundary.
 	nowMinusSkew := NowTime() - 1
 	assert.InDelta(t, int64(nowMinusSkew), int64(got.IssuedAt), 1)
 
@@ -241,6 +242,20 @@ func TestIDTokenClaims_GetUserInfo(t *testing.T) {
 	}
 	got := idTokenData.GetUserInfo()
 	assert.Equal(t, want, got)
+}
+
+func TestIDTokenClaims_UnmarshalJSON_StringAMR(t *testing.T) {
+	var got IDTokenClaims
+	err := json.Unmarshal([]byte(`{"iss":"zitadel","sub":"hello@me.com","aud":"foo","exp":12345,"iat":12000,"amr":"pwd"}`), &got)
+	assert.NoError(t, err)
+	assert.Equal(t, AuthenticationMethodsReferences{"pwd"}, got.AuthenticationMethodsReferences)
+}
+
+func TestIntrospectionResponse_UnmarshalJSON_StringAMR(t *testing.T) {
+	var got IntrospectionResponse
+	err := json.Unmarshal([]byte(`{"active":true,"sub":"hello@me.com","amr":"pwd"}`), &got)
+	assert.NoError(t, err)
+	assert.Equal(t, AuthenticationMethodsReferences{"pwd"}, got.AuthenticationMethodsReferences)
 }
 
 func TestNewLogoutTokenClaims(t *testing.T) {
@@ -269,7 +284,7 @@ func TestNewLogoutTokenClaims(t *testing.T) {
 
 	// test if the dynamic timestamp is around now,
 	// allowing for a delta of 1, just in case we flip on
-	// either side of a second boundry.
+	// either side of a second boundary.
 	nowMinusSkew := NowTime() - 1
 	assert.InDelta(t, int64(nowMinusSkew), int64(got.IssuedAt), 1)
 

@@ -86,10 +86,27 @@ The library uses build tags to enable or disable features. The following build t
 |-----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `no_otel`  | Disables the OTel instrumentation, which is enabled by default. This is useful if you do not want to use OTel or if you want to use a different instrumentation library. |
 
+### Logging
+
+OIDC writes logs through the global [`log/slog`](https://pkg.go.dev/log/slog) functions and therefore uses `slog.Default()`. Configure logging for the whole process before constructing an OIDC provider or relying party:
+
+```go
+slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+```
+
+To disable OIDC logs, set the default logger to a handler that discards output:
+
+```go
+slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+```
+
+Because the logger is process-wide, this also affects other code that uses the global `slog` functions.
+
+The existing `WithLogger`, `WithFallbackLogger`, and `Logger` APIs remain available for source compatibility but are deprecated. `op.WithLogger` / `WithFallbackLogger` are no-ops; `rp.WithLogger` still stores a logger for `rp.Logger()` callers. New code should call `slog.SetDefault` directly. Logger parameters on the exported error helpers are also retained for source compatibility, but OIDC logging uses the current global default.
+
 ### Server configuration
 
-Example server allows extra configuration using environment variables and could be used for end to
-end testing of your services.
+Example server allows extra configuration using environment variables and could be used for end-to-end testing of your services.
 
 | Name         | Format                           | Description                           |
 | ------------ | -------------------------------- | ------------------------------------- |
@@ -159,8 +176,8 @@ Made with [contrib.rocks](https://contrib.rocks).
 
 For your convenience you can find the relevant guides linked below.
 
-- [OpenID Connect Core 1.0 incorporating errata set 1](https://openid.net/specs/openid-connect-core-1_0.html)
-- [OIDC/OAuth Flow in Zitadel (using this library)](https://zitadel.com/docs/guides/integrate/login-users)
+- [OpenID Connect Core 1.0 incorporating errata set 2](https://openid.net/specs/openid-connect-core-1_0.html)
+- [OIDC/OAuth Flow in Zitadel (using this library)](https://zitadel.com/docs/guides/integrate/login/oidc/login-users)
 
 ## Supported Go Versions
 
@@ -169,9 +186,9 @@ Versions that also build are marked with :warning:.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| <1.24   | :x:                |
-| 1.24    | :white_check_mark: |
+| <1.25   | :x:                |
 | 1.25    | :white_check_mark: |
+| 1.26    | :white_check_mark: |
 
 ## Why another library
 
@@ -189,7 +206,7 @@ The `go-oidc` does only support `RP` and is not feasible to use as `OP` that's w
 
 [https://github.com/ory/fosite](https://github.com/ory/fosite)
 
-We did not choose `fosite` because it implements `OAuth 2.0` on its own and does not rely on the golang provided package. Nonetheless this is a great project.
+We did not choose `fosite` because it implements `OAuth 2.0` on its own and does not rely on the golang provided package. Nonetheless, this is a great project.
 
 ## License
 

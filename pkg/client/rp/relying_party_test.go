@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,27 @@ import (
 	tu "github.com/zitadel/oidc/v3/internal/testutil"
 	"github.com/zitadel/oidc/v3/pkg/oidc"
 )
+
+func TestDeprecatedLoggerCompatibility(t *testing.T) {
+	previous := slog.Default()
+	configured := slog.New(slog.NewTextHandler(new(strings.Builder), nil))
+
+	rp := &relyingParty{}
+	require.NoError(t, WithLogger(configured)(rp))
+	assert.Same(t, previous, slog.Default())
+
+	logger, ok := rp.Logger(context.Background())
+	assert.Same(t, configured, logger)
+	assert.True(t, ok)
+
+	assert.NotPanics(t, func() {
+		require.NoError(t, WithLogger(nil)(&relyingParty{}))
+	})
+
+	logger, ok = (&relyingParty{}).Logger(context.Background())
+	assert.Same(t, previous, logger)
+	assert.True(t, ok)
+}
 
 func Test_verifyTokenResponse(t *testing.T) {
 	verifier := &IDTokenVerifier{
@@ -38,12 +60,12 @@ func Test_verifyTokenResponse(t *testing.T) {
 		wantErr    error
 	}{
 		{
-			name:       "succes, oauth2 only",
+			name:       "success, oauth2 only",
 			oauth2Only: true,
 			tokens: func() (*oauth2.Token, *oidc.Tokens[*oidc.IDTokenClaims]) {
-				accesToken, _ := tu.ValidAccessToken()
+				accessToken, _ := tu.ValidAccessToken()
 				token := &oauth2.Token{
-					AccessToken: accesToken,
+					AccessToken: accessToken,
 				}
 				return token, &oidc.Tokens[*oidc.IDTokenClaims]{
 					Token: token,
@@ -54,9 +76,9 @@ func Test_verifyTokenResponse(t *testing.T) {
 			name:       "id_token missing error",
 			oauth2Only: false,
 			tokens: func() (*oauth2.Token, *oidc.Tokens[*oidc.IDTokenClaims]) {
-				accesToken, _ := tu.ValidAccessToken()
+				accessToken, _ := tu.ValidAccessToken()
 				token := &oauth2.Token{
-					AccessToken: accesToken,
+					AccessToken: accessToken,
 				}
 				return token, &oidc.Tokens[*oidc.IDTokenClaims]{
 					Token: token,
@@ -68,9 +90,9 @@ func Test_verifyTokenResponse(t *testing.T) {
 			name:       "verify tokens error",
 			oauth2Only: false,
 			tokens: func() (*oauth2.Token, *oidc.Tokens[*oidc.IDTokenClaims]) {
-				accesToken, _ := tu.ValidAccessToken()
+				accessToken, _ := tu.ValidAccessToken()
 				token := &oauth2.Token{
-					AccessToken: accesToken,
+					AccessToken: accessToken,
 				}
 				token = token.WithExtra(map[string]any{
 					"id_token": "foobar",
@@ -83,9 +105,9 @@ func Test_verifyTokenResponse(t *testing.T) {
 			name:       "success, with id_token",
 			oauth2Only: false,
 			tokens: func() (*oauth2.Token, *oidc.Tokens[*oidc.IDTokenClaims]) {
-				accesToken, _ := tu.ValidAccessToken()
+				accessToken, _ := tu.ValidAccessToken()
 				token := &oauth2.Token{
-					AccessToken: accesToken,
+					AccessToken: accessToken,
 				}
 				idToken, claims := tu.ValidIDToken()
 				token = token.WithExtra(map[string]any{

@@ -2,7 +2,6 @@ package op
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -11,7 +10,7 @@ import (
 	"github.com/zitadel/oidc/v3/pkg/oidc"
 )
 
-// JWTProfileVerfiier extends oidc.Verifier with
+// JWTProfileVerifier extends oidc.Verifier with
 // a jwtProfileKeyStorage and a function to check
 // the subject in a token.
 type JWTProfileVerifier struct {
@@ -21,12 +20,12 @@ type JWTProfileVerifier struct {
 	CheckSubject func(request *oidc.JWTTokenRequest) error
 }
 
-// NewJWTProfileVerifier creates a oidc.Verifier for JWT Profile assertions (authorization grant and client authentication)
+// NewJWTProfileVerifier creates an oidc.Verifier for JWT Profile assertions (authorization grant and client authentication)
 func NewJWTProfileVerifier(storage JWTProfileKeyStorage, issuer string, maxAgeIAT, offset time.Duration, opts ...JWTProfileVerifierOption) *JWTProfileVerifier {
 	return newJWTProfileVerifier(storage, nil, issuer, maxAgeIAT, offset, opts...)
 }
 
-// NewJWTProfileVerifierKeySet creates a oidc.Verifier for JWT Profile assertions (authorization grant and client authentication)
+// NewJWTProfileVerifierKeySet creates an oidc.Verifier for JWT Profile assertions (authorization grant and client authentication)
 func NewJWTProfileVerifierKeySet(keySet oidc.KeySet, issuer string, maxAgeIAT, offset time.Duration, opts ...JWTProfileVerifierOption) *JWTProfileVerifier {
 	return newJWTProfileVerifier(nil, keySet, issuer, maxAgeIAT, offset, opts...)
 }
@@ -106,7 +105,7 @@ type JWTProfileKeyStorage interface {
 // SubjectIsIssuer
 func SubjectIsIssuer(request *oidc.JWTTokenRequest) error {
 	if request.Issuer != request.Subject {
-		return errors.New("delegation not allowed, issuer and sub must be identical")
+		return oidc.ErrSubjectInvalid
 	}
 	return nil
 }

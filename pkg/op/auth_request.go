@@ -52,6 +52,7 @@ type Authorizer interface {
 	IDTokenHintVerifier(context.Context) *IDTokenHintVerifier
 	Crypto() Crypto
 	RequestObjectSupported() bool
+	// Deprecated: configure logging with slog.SetDefault.
 	Logger() *slog.Logger
 }
 
@@ -127,6 +128,19 @@ func Authorize(w http.ResponseWriter, r *http.Request, authorizer Authorizer) {
 	if authReq.RequestParam != "" {
 		AuthRequestError(w, r, authReq, oidc.ErrRequestNotSupported(), authorizer)
 		return
+	}
+	// A custom AuthorizeValidator (see the AuthorizeValidator interface) replaces the
+	// default validation closure that assigns client above, so client may still be nil
+	// here. RedirectToLogin dereferences client (client.LoginURL), so fetch it if a
+	// custom validator left it unset, to avoid a nil pointer panic.
+	if client == nil {
+		client, err = authorizer.Storage().GetClientByClientID(ctx, authReq.ClientID)
+		if err != nil {
+			// The library cannot assume the custom validator verified the redirect_uri
+			// against the client, so disable the error redirect to avoid an open redirect.
+			AuthRequestError(w, r, authReq, oidc.ErrInvalidRequestRedirectURI().WithDescription("unable to retrieve client by id").WithParent(err), authorizer)
+			return
+		}
 	}
 	req, err := authorizer.Storage().CreateAuthRequest(ctx, authReq, userID)
 	if err != nil {
@@ -297,7 +311,7 @@ func ValidateAuthReqScopes(client Client, scopes []string) ([]string, error) {
 	return scopes, nil
 }
 
-// checkURIAgainstRedirects just checks aginst the valid redirect URIs and ignores
+// checkURIAgainstRedirects just checks against the valid redirect URIs and ignores
 // other factors.
 func checkURIAgainstRedirects(client Client, uri string) error {
 	if slices.Contains(client.RedirectURIs(), uri) {
@@ -582,11 +596,11 @@ func AuthResponseToken(w http.ResponseWriter, r *http.Request, authReq AuthReque
 }
 
 // CreateAuthRequestCode creates and stores a code for the auth code response
-func CreateAuthRequestCode(ctx context.Context, authReq AuthRequest, storage Storage, crypto Crypto) (string, error) {
+func CreateAuthRequestCode(ctx context.Context, authReq AuthRequest, storage Storage, encrypter Encrypter) (string, error) {
 	ctx, span := Tracer.Start(ctx, "CreateAuthRequestCode")
 	defer span.End()
 
-	code, err := BuildAuthRequestCode(authReq, crypto)
+	code, err := BuildAuthRequestCode(authReq, encrypter)
 	if err != nil {
 		return "", err
 	}
@@ -597,8 +611,8 @@ func CreateAuthRequestCode(ctx context.Context, authReq AuthRequest, storage Sto
 }
 
 // BuildAuthRequestCode builds the string representation of the auth code
-func BuildAuthRequestCode(authReq AuthRequest, crypto Crypto) (string, error) {
-	return crypto.Encrypt(authReq.GetID())
+func BuildAuthRequestCode(authReq AuthRequest, encrypter Encrypter) (string, error) {
+	return encrypter.Encrypt(authReq.GetID())
 }
 
 // AuthResponseURL encodes the authorization response (successful and error) and sets it as query or fragment values

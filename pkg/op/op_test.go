@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,10 +21,22 @@ import (
 	"golang.org/x/text/language"
 )
 
+func TestDeprecatedWithLogger(t *testing.T) {
+	previous := slog.Default()
+	configured := slog.New(slog.NewTextHandler(new(strings.Builder), nil))
+
+	require.NoError(t, op.WithLogger(configured)(&op.Provider{}))
+	assert.Same(t, previous, slog.Default())
+	assert.NotPanics(t, func() {
+		require.NoError(t, op.WithLogger(nil)(&op.Provider{}))
+	})
+}
+
 var (
 	testProvider op.OpenIDProvider
 	testConfig   = &op.Config{
 		CryptoKey:                sha256.Sum256([]byte("test")),
+		CryptoKeyId:              "key1",
 		DefaultLogoutRedirectURI: pathLoggedOut,
 		CodeMethodS256:           true,
 		AuthMethodPost:           true,
@@ -204,7 +217,7 @@ func TestRoutes(t *testing.T) {
 				"assertion":  jwtToken,
 			},
 			wantCode: http.StatusBadRequest,
-			json:     "{\"error\":\"server_error\",\"error_description\":\"audience is not valid: Audience must contain client_id \\\"https://localhost:9998/\\\"\"}",
+			json:     "{\"error\":\"invalid_grant\",\"error_description\":\"audience is not valid: Audience must contain client_id \\\"https://localhost:9998/\\\"\"}",
 		},
 		{
 			name:      "Token exchange",
