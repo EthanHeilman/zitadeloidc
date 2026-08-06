@@ -18,12 +18,11 @@ import (
 // Parameters, claims and helpers for OpenID Connect Key Binding 1.0, which
 // binds an ID Token to a proof-of-possession key using DPoP proofs.
 //
-// Key Binding is still an IETF draft, so everything in this file is
-// EXPERIMENTAL: may change until v4
+// OpenID Connect Key Binding is a draft, but it is already deployed by
+// production IdPs, so the wire format here is stable in practice. Any
+// adjustments to track the final specification will follow the normal
+// deprecation process rather than changing without notice.
 const (
-	// ScopeBoundKey requests an ID Token bound to a proof-of-possession key.
-	ScopeBoundKey = "bound_key"
-
 	// DPoPJKTParam is the authorization request parameter carrying the
 	// base64url-encoded SHA-256 JWK thumbprint of the binding key.
 	DPoPJKTParam = "dpop_jkt"
