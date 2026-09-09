@@ -20,20 +20,42 @@ import (
 const (
 	// DPoPJKTParam is the authorization request parameter carrying the
 	// base64url-encoded SHA-256 JWK thumbprint of the binding key.
+	//
+	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+	// This API may change or be removed without a major version bump.
 	DPoPJKTParam = "dpop_jkt"
 
+	// DPoPHeader is the HTTP header name used to carry a DPoP proof.
+	//
+	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+	// This API may change or be removed without a major version bump.
 	DPoPHeader = "DPoP"
 
-	DPoPProofType jose.ContentType = "dpop+jwt" // DPoP proof's typ header
+	// DPoPProofType is the DPoP proof's typ header.
+	//
+	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+	// This API may change or be removed without a major version bump.
+	DPoPProofType jose.ContentType = "dpop+jwt"
 
-	IDTokenTypeDPoP jose.ContentType = "dpop+id_token" // Key bound ID Token typ header
+	// IDTokenTypeDPoP is the key bound ID Token typ header.
+	//
+	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+	// This API may change or be removed without a major version bump.
+	IDTokenTypeDPoP jose.ContentType = "dpop+id_token"
 )
 
-// cnf claim of a key-bound ID Token.
+// Confirmation is the cnf claim of a key-bound ID Token.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 type Confirmation struct {
 	JWK json.RawMessage `json:"jwk"`
 }
 
+// DPoPProofClaims represents the claims in a DPoP proof JWT.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 type DPoPProofClaims struct {
 	JWTID      string `json:"jti"`
 	HTTPMethod string `json:"htm"`
@@ -42,6 +64,10 @@ type DPoPProofClaims struct {
 	CodeHash   string `json:"c_s256,omitempty"`
 }
 
+// UnmarshalJSON implements custom JSON unmarshaling for DPoPProofClaims.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 func (c *DPoPProofClaims) UnmarshalJSON(data []byte) error {
 	type claims DPoPProofClaims
 	var decoded claims
@@ -68,6 +94,9 @@ func (c *DPoPProofClaims) UnmarshalJSON(data []byte) error {
 
 // ValidDPoPJKT reports whether value is an unpadded base64url-encoded
 // SHA-256 JWK thumbprint.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 func ValidDPoPJKT(value string) bool {
 	decoded, err := base64.RawURLEncoding.Strict().DecodeString(value)
 	return err == nil && len(decoded) == sha256.Size && base64.RawURLEncoding.EncodeToString(decoded) == value
@@ -75,6 +104,9 @@ func ValidDPoPJKT(value string) bool {
 
 // JWKThumbprint returns the RFC 7638 SHA-256 thumbprint of jwk, encoded
 // with unpadded base64url.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 func JWKThumbprint(jwk *jose.JSONWebKey) (string, error) {
 	thumbprint, err := jwk.Thumbprint(crypto.SHA256)
 	if err != nil {
@@ -88,6 +120,9 @@ func JWKThumbprint(jwk *jose.JSONWebKey) (string, error) {
 // and Ed25519 (fixed strength). Other key types pass; callers are expected to
 // have already restricted the key to a public asymmetric type. Shared by the OP
 // and RP so the two cannot drift apart.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 func ValidateDPoPKeyStrength(key any) error {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
@@ -106,6 +141,9 @@ func ValidateDPoPKeyStrength(key any) error {
 }
 
 // CodeHash returns the c_s256 value for an authorization or device code.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 func CodeHash(code string) string {
 	hash := sha256.Sum256([]byte(code))
 	return base64.RawURLEncoding.EncodeToString(hash[:])

@@ -53,10 +53,8 @@ func DeviceAuthorization(ctx context.Context, scopes []string, rp RelyingParty, 
 	if !bound {
 		return client.CallDeviceAuthorizationEndpoint(ctx, req, rp, authFn)
 	}
-	return client.CallDeviceAuthorizationEndpointWithBoundKey(ctx, &client.BoundKeyDeviceAuthorizationRequest{
-		ClientCredentialsRequest: req,
-		DPoPJKT:                  configured.KeyBindingThumbprint(),
-	}, rp, authFn)
+	return client.CallDeviceAuthorizationEndpoint(ctx, req, rp, authFn,
+		client.WithDPoPJKT(configured.KeyBindingThumbprint()))
 }
 
 // DeviceAccessToken attempts to obtain tokens from a Device Authorization,

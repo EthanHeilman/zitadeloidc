@@ -23,8 +23,23 @@ import (
 )
 
 var (
-	ErrInvalidKeyBinding      = errors.New("invalid key binding configuration")
-	ErrKeyBindingIDToken      = errors.New("invalid key-bound ID token")
+	// ErrInvalidKeyBinding is returned when the key binding configuration is invalid.
+	//
+	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+	// This API may change or be removed without a major version bump.
+	ErrInvalidKeyBinding = errors.New("invalid key binding configuration")
+
+	// ErrKeyBindingIDToken is returned when a key-bound ID token is invalid.
+	//
+	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+	// This API may change or be removed without a major version bump.
+	ErrKeyBindingIDToken = errors.New("invalid key-bound ID token")
+
+	// ErrKeyBindingConfirmation is returned when the ID token confirmation
+	// does not match the binding key.
+	//
+	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+	// This API may change or be removed without a major version bump.
 	ErrKeyBindingConfirmation = errors.New("ID token confirmation does not match the binding key")
 )
 
@@ -35,6 +50,9 @@ type keyBinding struct {
 
 // KeyBindingRelyingParty is implemented by RPs configured with
 // [WithKeyBinding].
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 type KeyBindingRelyingParty interface {
 	RelyingParty
 	KeyBindingThumbprint() string
@@ -49,6 +67,9 @@ type KeyBindingRelyingParty interface {
 //
 // Signer may be any [crypto.Signer], including an HSM-backed signer. alg must
 // be an asymmetric JWS algorithm supported by the signer's key.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 func WithKeyBinding(signer crypto.Signer, alg jose.SignatureAlgorithm) Option {
 	return func(rp *relyingParty) error {
 		if rp.oauth2Only {
@@ -123,6 +144,11 @@ func nilCryptoSigner(signer crypto.Signer) bool {
 	}
 }
 
+// KeyBindingThumbprint returns the RFC 7638 SHA-256 JWK thumbprint of the
+// binding key.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 func (rp *relyingParty) KeyBindingThumbprint() string {
 	if rp.keyBinding == nil {
 		return ""
@@ -130,6 +156,11 @@ func (rp *relyingParty) KeyBindingThumbprint() string {
 	return rp.keyBinding.thumbprint
 }
 
+// SignDPoPProof creates and signs a DPoP proof JWT for the given HTTP method,
+// URI, and optional authorization/device code.
+//
+// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+// This API may change or be removed without a major version bump.
 func (rp *relyingParty) SignDPoPProof(method, htu, code string) (string, error) {
 	if rp.keyBinding == nil {
 		return "", ErrInvalidKeyBinding
