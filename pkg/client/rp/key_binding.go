@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -41,6 +43,13 @@ var (
 	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
 	// This API may change or be removed without a major version bump.
 	ErrKeyBindingConfirmation = errors.New("ID token confirmation does not match the binding key")
+
+	// ErrKeyBindingEndpoint is returned when a key-bound token request would be
+	// sent anywhere other than the expected token endpoint, e.g. a redirect.
+	//
+	// Experimental: OpenID Connect Key Binding 1.0 is a draft standard.
+	// This API may change or be removed without a major version bump.
+	ErrKeyBindingEndpoint = errors.New("key-bound request refused for a URL other than the token endpoint")
 )
 
 type keyBinding struct {
@@ -240,30 +249,53 @@ func (k *keyBinding) proof(method, tokenEndpoint, code string) (string, error) {
 }
 
 type keyBindingTransport struct {
-	base          http.RoundTripper
-	binding       KeyBindingRelyingParty
-	code          string
-	tokenEndpoint string
+	base             http.RoundTripper
+	binding          KeyBindingRelyingParty
+	code             string
+	tokenEndpointURI *url.URL
+}
+
+// htuClaim returns the DPoP htu value defined in RFC 9449, section 4.2,
+// i.e., removing the query and fragment from a URI.
+func htuClaim(u *url.URL) string {
+	n := *u
+	n.User = nil
+	n.RawQuery = ""
+	n.ForceQuery = false
+	n.Fragment = ""
+	n.RawFragment = ""
+	return n.String()
+}
+
+// htuKey returns a normalized version of the token endpoint URI
+// for comparison per RFC 3986, sections 6.2.2 and 6.2.3.
+func htuKey(u *url.URL) string {
+	n := *u
+	n.Scheme = strings.ToLower(n.Scheme)
+	n.Host = strings.ToLower(n.Host)
+	if port := n.Port(); (n.Scheme == "https" && port == "443") || (n.Scheme == "http" && port == "80") {
+		n.Host = n.Hostname()
+	}
+	return htuClaim(&n)
 }
 
 func (t *keyBindingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	htu := *req.URL
-	htu.RawQuery = ""
-	htu.ForceQuery = false
-	htu.Fragment = ""
-	htu.RawFragment = ""
+	// Use the normalized htuKey for correct htu comparison
+	htuExpected := htuKey(t.tokenEndpointURI)
+	htuGot := htuKey(req.URL)
 
 	// Only ever sign a proof for the configured token endpoint. Without this,
 	// a 307/308 redirect from the token endpoint would make net/http replay the
 	// POST body (authorization code and client secret) to the redirect target,
 	// and this transport would helpfully mint a fresh proof for that host,
 	// disclosing c_s256 = SHA256(code) to it.
-	if t.tokenEndpoint == "" || htu.String() != t.tokenEndpoint {
-		return nil, fmt.Errorf("%w: refusing to sign a DPoP proof for %q, expected the token endpoint %q",
-			ErrInvalidKeyBinding, htu.String(), t.tokenEndpoint)
+	if htuGot != htuExpected {
+		return nil, fmt.Errorf("%w: got %q, expected %q", ErrKeyBindingEndpoint, htuGot, htuExpected)
 	}
 
-	proof, err := t.binding.SignDPoPProof(req.Method, htu.String(), t.code)
+	// We should not perform full normalization on the actual htu claim in the DPoP proof.
+	htuClaim := htuClaim(t.tokenEndpointURI)
+	proof, err := t.binding.SignDPoPProof(req.Method, htuClaim, t.code)
 	if err != nil {
 		return nil, err
 	}
@@ -274,8 +306,16 @@ func (t *keyBindingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 // keyBindingHTTPClient returns a shallow copy of client whose transport adds a
 // DPoP proof to a single token-endpoint request. tokenEndpoint pins the only
-// URL a proof will be signed for.
-func keyBindingHTTPClient(client *http.Client, binding KeyBindingRelyingParty, code, tokenEndpoint string) *http.Client {
+// URL a proof will be signed for. The token endpoint is validated here before
+// any request is made.
+func keyBindingHTTPClient(client *http.Client, binding KeyBindingRelyingParty, code, tokenEndpoint string) (*http.Client, error) {
+	if tokenEndpoint == "" {
+		return nil, fmt.Errorf("%w: token endpoint is not set", ErrInvalidKeyBinding)
+	}
+	tokenEndpointURI, err := url.Parse(tokenEndpoint)
+	if err != nil || !tokenEndpointURI.IsAbs() || tokenEndpointURI.Host == "" {
+		return nil, fmt.Errorf("%w: invalid token endpoint %q", ErrInvalidKeyBinding, tokenEndpoint)
+	}
 	clone := http.Client{}
 	if client != nil {
 		clone = *client
@@ -285,16 +325,16 @@ func keyBindingHTTPClient(client *http.Client, binding KeyBindingRelyingParty, c
 		base = http.DefaultTransport
 	}
 	clone.Transport = &keyBindingTransport{
-		base:          base,
-		binding:       binding,
-		code:          code,
-		tokenEndpoint: tokenEndpoint,
+		base:             base,
+		binding:          binding,
+		code:             code,
+		tokenEndpointURI: tokenEndpointURI,
 	}
 	// Refuse redirects rather than re-POST the code to another host.
 	clone.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return fmt.Errorf("%w: token endpoint redirect to %q refused", ErrInvalidKeyBinding, req.URL.Redacted())
+		return fmt.Errorf("%w: token endpoint redirect to %q refused", ErrKeyBindingEndpoint, req.URL.Redacted())
 	}
-	return &clone
+	return &clone, nil
 }
 
 // verifyKeyBindingIDToken checks that token is actually bound to the RP's

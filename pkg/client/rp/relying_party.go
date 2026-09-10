@@ -545,7 +545,10 @@ func CodeExchange[C oidc.IDClaims](ctx context.Context, code string, rp RelyingP
 
 	httpClient := rp.HttpClient()
 	if configured, ok := keyBindingRP(rp); ok {
-		httpClient = keyBindingHTTPClient(httpClient, configured, code, rp.OAuthConfig().Endpoint.TokenURL)
+		httpClient, err = keyBindingHTTPClient(httpClient, configured, code, rp.OAuthConfig().Endpoint.TokenURL)
+		if err != nil {
+			return nil, err
+		}
 	}
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 	codeOpts := make([]oauth2.AuthCodeOption, 0)
@@ -887,7 +890,11 @@ func RefreshTokens[C oidc.IDClaims](ctx context.Context, rp RelyingParty, refres
 
 	httpClient := rp.HttpClient()
 	if configured, ok := keyBindingRP(rp); ok {
-		httpClient = keyBindingHTTPClient(httpClient, configured, "", rp.OAuthConfig().Endpoint.TokenURL)
+		var err error
+		httpClient, err = keyBindingHTTPClient(httpClient, configured, "", rp.OAuthConfig().Endpoint.TokenURL)
+		if err != nil {
+			return nil, err
+		}
 	}
 	caller := tokenEndpointCaller{RelyingParty: rp, httpClient: httpClient}
 	newToken, err := client.CallTokenEndpointWithAuthFn(ctx, request, authFn, caller)

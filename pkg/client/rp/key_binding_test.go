@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"testing"
@@ -276,17 +277,72 @@ func TestVerifyKeyBindingIDToken(t *testing.T) {
 	}
 }
 
+func TestHTU(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		wantClaim string
+		wantKey   string
+	}{
+		{name: "plain", raw: "https://op.example.com/token",
+			wantClaim: "https://op.example.com/token", wantKey: "https://op.example.com/token"},
+		{name: "strips query", raw: "https://op.example.com/token?tenant=42",
+			wantClaim: "https://op.example.com/token", wantKey: "https://op.example.com/token"},
+		{name: "strips empty query", raw: "https://op.example.com/token?",
+			wantClaim: "https://op.example.com/token", wantKey: "https://op.example.com/token"},
+		{name: "strips fragment", raw: "https://op.example.com/token#frag",
+			wantClaim: "https://op.example.com/token", wantKey: "https://op.example.com/token"},
+		{name: "strips userinfo", raw: "https://user:secret@op.example.com/token",
+			wantClaim: "https://op.example.com/token", wantKey: "https://op.example.com/token"},
+		// The claim keeps the spelling the OP published; only the key normalizes.
+		{name: "keeps host case in the claim", raw: "https://OP.Example.COM/token",
+			wantClaim: "https://OP.Example.COM/token", wantKey: "https://op.example.com/token"},
+		{name: "keeps default https port in the claim", raw: "https://op.example.com:443/token",
+			wantClaim: "https://op.example.com:443/token", wantKey: "https://op.example.com/token"},
+		{name: "keeps default http port in the claim", raw: "http://op.example.com:80/token",
+			wantClaim: "http://op.example.com:80/token", wantKey: "http://op.example.com/token"},
+		{name: "keeps non-default port", raw: "https://op.example.com:8443/token",
+			wantClaim: "https://op.example.com:8443/token", wantKey: "https://op.example.com:8443/token"},
+		{name: "keeps path case and encoding", raw: "https://op.example.com/a%2Fb/Token",
+			wantClaim: "https://op.example.com/a%2Fb/Token", wantKey: "https://op.example.com/a%2Fb/Token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			u, err := url.Parse(tt.raw)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantClaim, htuClaim(u), "signed htu claim")
+			assert.Equal(t, tt.wantKey, htuKey(u), "comparison key")
+		})
+	}
+}
+
 func TestKeyBindingHTTPClient(t *testing.T) {
 	const tokenEndpoint = "https://op.example.com/token"
 	rp := newKeyBoundRP(t)
 
-	t.Run("signs proof for the token endpoint", func(t *testing.T) {
-		var seen *http.Request
-		base := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			seen = r
+	// captureClient returns an http.Client whose transport records the last
+	// request
+	captureClient := func(seen **http.Request) *http.Client {
+		return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			*seen = r
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 		})}
-		hc := keyBindingHTTPClient(base, rp, "code", tokenEndpoint)
+	}
+
+	// proofHTU extracts the htu claim from the DPoP header of the request
+	proofHTU := func(t *testing.T, req *http.Request) string {
+		t.Helper()
+		jws, err := jose.ParseSigned(req.Header.Get(oidc.DPoPHeader), []jose.SignatureAlgorithm{jose.ES256})
+		require.NoError(t, err)
+		var claims oidc.DPoPProofClaims
+		require.NoError(t, json.Unmarshal(jws.UnsafePayloadWithoutVerification(), &claims))
+		return claims.HTTPURI
+	}
+
+	t.Run("signs proof for the token endpoint", func(t *testing.T) {
+		var seen *http.Request
+		hc, err := keyBindingHTTPClient(captureClient(&seen), rp, "code", tokenEndpoint)
+		require.NoError(t, err)
 
 		// A query string must not change the pinned htu.
 		req, err := http.NewRequest(http.MethodPost, tokenEndpoint+"?foo=bar", nil)
@@ -295,22 +351,87 @@ func TestKeyBindingHTTPClient(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		require.NotNil(t, seen)
-		assert.NotEmpty(t, seen.Header.Get(oidc.DPoPHeader))
+		assert.Equal(t, tokenEndpoint, proofHTU(t, seen))
+	})
+
+	t.Run("accepts equivalent variants of the token endpoint", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			configured string
+			request    string
+			wantHTU    string
+		}{
+			{name: "configured endpoint has a query string", configured: tokenEndpoint + "?tenant=42",
+				request: tokenEndpoint + "?tenant=42", wantHTU: tokenEndpoint},
+			{name: "configured endpoint has a fragment", configured: tokenEndpoint + "#x",
+				request: tokenEndpoint, wantHTU: tokenEndpoint},
+			{name: "request carries userinfo", configured: tokenEndpoint,
+				request: "https://user:pw@op.example.com/token", wantHTU: tokenEndpoint},
+			// A default port or a different host case on either side is
+			// equivalent under RFC 3986, so the request is allowed - but the
+			// proof still carries the endpoint exactly as the OP published it.
+			{name: "request has default port", configured: tokenEndpoint,
+				request: "https://op.example.com:443/token", wantHTU: tokenEndpoint},
+			{name: "configured has default port", configured: "https://op.example.com:443/token",
+				request: tokenEndpoint, wantHTU: "https://op.example.com:443/token"},
+			{name: "host case differs", configured: "https://OP.Example.com/token",
+				request: tokenEndpoint, wantHTU: "https://OP.Example.com/token"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var seen *http.Request
+				hc, err := keyBindingHTTPClient(captureClient(&seen), rp, "code", tt.configured)
+				require.NoError(t, err)
+				req, err := http.NewRequest(http.MethodPost, tt.request, nil)
+				require.NoError(t, err)
+				_, err = hc.Transport.RoundTrip(req)
+				require.NoError(t, err)
+				require.NotNil(t, seen)
+				assert.Equal(t, tt.wantHTU, proofHTU(t, seen))
+			})
+		}
 	})
 
 	t.Run("refuses another endpoint", func(t *testing.T) {
-		hc := keyBindingHTTPClient(nil, rp, "code", tokenEndpoint)
-		req, err := http.NewRequest(http.MethodPost, "https://evil.example.com/token", nil)
-		require.NoError(t, err)
-		_, err = hc.Transport.RoundTrip(req)
-		assert.ErrorIs(t, err, ErrInvalidKeyBinding)
+		tests := []struct {
+			name    string
+			request string
+		}{
+			{name: "other host", request: "https://evil.example.com/token"},
+			{name: "other path", request: "https://op.example.com/token/../authorize"},
+			{name: "other scheme", request: "http://op.example.com/token"},
+			{name: "other port", request: "https://op.example.com:8443/token"},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var seen *http.Request
+				hc, err := keyBindingHTTPClient(captureClient(&seen), rp, "code", tokenEndpoint)
+				require.NoError(t, err)
+				req, err := http.NewRequest(http.MethodPost, tt.request, nil)
+				require.NoError(t, err)
+				_, err = hc.Transport.RoundTrip(req)
+				assert.ErrorIs(t, err, ErrKeyBindingEndpoint)
+				assert.NotErrorIs(t, err, ErrInvalidKeyBinding, "a runtime refusal is not a configuration error")
+				assert.Nil(t, seen, "the request must not reach the network")
+			})
+		}
 	})
 
 	t.Run("refuses redirects", func(t *testing.T) {
-		hc := keyBindingHTTPClient(nil, rp, "code", tokenEndpoint)
+		hc, err := keyBindingHTTPClient(nil, rp, "code", tokenEndpoint)
+		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodGet, "https://evil.example.com/", nil)
 		require.NoError(t, err)
-		assert.Error(t, hc.CheckRedirect(req, nil))
+		assert.ErrorIs(t, hc.CheckRedirect(req, nil), ErrKeyBindingEndpoint)
+	})
+
+	t.Run("rejects a missing or invalid token endpoint at construction", func(t *testing.T) {
+		for _, endpoint := range []string{"", "/token", "op.example.com/token", "://bad"} {
+			t.Run(fmt.Sprintf("%q", endpoint), func(t *testing.T) {
+				_, err := keyBindingHTTPClient(nil, rp, "code", endpoint)
+				assert.ErrorIs(t, err, ErrInvalidKeyBinding)
+			})
+		}
 	})
 }
 

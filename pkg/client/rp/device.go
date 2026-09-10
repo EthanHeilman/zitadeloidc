@@ -101,7 +101,10 @@ func DeviceAccessToken(ctx context.Context, deviceCode string, interval time.Dur
 	configured, bound := keyBindingRP(rp)
 	if bound {
 		// The proof is over the device code (c_s256)
-		caller.httpClient = keyBindingHTTPClient(rp.HttpClient(), configured, deviceCode, rp.OAuthConfig().Endpoint.TokenURL)
+		caller.httpClient, err = keyBindingHTTPClient(rp.HttpClient(), configured, deviceCode, rp.OAuthConfig().Endpoint.TokenURL)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	resp, err = client.PollDeviceAccessTokenEndpointWithAuthFn(ctx, interval, req, caller, authFn)
