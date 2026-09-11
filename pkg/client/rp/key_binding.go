@@ -273,8 +273,15 @@ func htuKey(u *url.URL) string {
 	n := *u
 	n.Scheme = strings.ToLower(n.Scheme)
 	n.Host = strings.ToLower(n.Host)
-	if port := n.Port(); (n.Scheme == "https" && port == "443") || (n.Scheme == "http" && port == "80") {
-		n.Host = n.Hostname()
+	port := n.Port()
+
+	// Trim the default port off of the host. This avoids rebuilding
+	// from Hostname() as Hostname() removes the square brackets from
+	// IPv6 literals.
+	if n.Scheme == "https" && port == "443" {
+		n.Host = strings.TrimSuffix(n.Host, ":443")
+	} else if n.Scheme == "http" && port == "80" {
+		n.Host = strings.TrimSuffix(n.Host, ":80")
 	}
 	return htuClaim(&n)
 }

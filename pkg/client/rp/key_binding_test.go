@@ -303,6 +303,10 @@ func TestHTU(t *testing.T) {
 			wantClaim: "http://op.example.com:80/token", wantKey: "http://op.example.com/token"},
 		{name: "keeps non-default port", raw: "https://op.example.com:8443/token",
 			wantClaim: "https://op.example.com:8443/token", wantKey: "https://op.example.com:8443/token"},
+		{name: "ipv6 literal uppercased", raw: "https://[2001:DB8::1]/token",
+			wantClaim: "https://[2001:DB8::1]/token", wantKey: "https://[2001:db8::1]/token"},
+		{name: "keeps ipv6 brackets when default port", raw: "https://[2001:db8::1]:443/token",
+			wantClaim: "https://[2001:db8::1]:443/token", wantKey: "https://[2001:db8::1]/token"},
 		{name: "keeps path case and encoding", raw: "https://op.example.com/a%2Fb/Token",
 			wantClaim: "https://op.example.com/a%2Fb/Token", wantKey: "https://op.example.com/a%2Fb/Token"},
 	}
